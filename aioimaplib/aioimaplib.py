@@ -1004,7 +1004,7 @@ class IMAP4(object):
         self.tasks.add(wait_for_ack)
         wait_for_ack.add_done_callback(self.tasks.discard)
         await asyncio.wait({idle, wait_for_ack}, return_when=asyncio.FIRST_COMPLETED)
-        if not self.has_pending_idle():
+        if not self.is_idling():
             wait_for_ack.cancel()
             raise Abort('server returned error to IDLE command')
 
@@ -1016,7 +1016,7 @@ class IMAP4(object):
         self._idle_waiter = self.protocol.loop.call_later(timeout, start_stop_wait_server_push)
         return idle
 
-    def has_pending_idle(self) -> bool:
+    def is_idling(self) -> bool:
         """
         This method returns whether or not the system is in IDLE mode. This is checked locally and NOT on the server!
         :return: bool
@@ -1150,6 +1150,16 @@ class IMAP4(object):
         :return: Server responds with a status and information about the outcome of the command -> Response: namedtuple('Response', 'result lines')
         """
         return await asyncio.wait_for(self.protocol.close(), self.timeout)
+
+    async def connection_close(self) -> None:
+        """
+        This method closes the TCP connection. It automatically checks for idling and calls idle_done method if needed.
+        :raises TimeoutError in case of disconnect issues
+        """
+        if self.is_idling():
+            self.idle_done()
+        await self.close()
+        await self.logout()
 
     async def move(self, uid_set: str, mailbox: str) -> Response:
         return await asyncio.wait_for(self.protocol.move(uid_set, mailbox), self.timeout)
