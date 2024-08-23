@@ -561,7 +561,8 @@ class IMAP4ClientProtocol(asyncio.Protocol):
             return await self.move(*criteria, by_uid=True)
         if command.upper() == 'EXPUNGE':
             if 'UIDPLUS' not in self.capabilities:
-                raise Abort('EXPUNGE with uids is only valid with UIDPLUS capability. UIDPLUS not in (%s)' % self.capabilities)
+                raise Abort(
+                    'EXPUNGE with uids is only valid with UIDPLUS capability. UIDPLUS not in (%s)' % self.capabilities)
             return await self.expunge(*criteria, by_uid=True)
         raise Abort('command UID only possible with COPY, FETCH, EXPUNGE (w/UIDPLUS) or STORE (was %s)' % command.upper())
 
@@ -711,19 +712,23 @@ class IMAP4(object):
         self.protocol = None
         self._idle_waiter = None
         self.tasks: set[Future] = set()
-        self.create_client(host, port, loop, conn_lost_cb, ssl_context)
+        self.asyncio_loop = loop if loop is not None else get_running_loop()
+        self.host = host
+        self.port = port
+        self.conn_lost_cb = conn_lost_cb
+        self.ssl_context = ssl_context
+        # self.create_client(host, port, loop, conn_lost_cb, ssl_context)
 
-    def create_client(self, host: str, port: int, loop: asyncio.AbstractEventLoop,
-                      conn_lost_cb: Callable[[Optional[Exception]], None] = None, ssl_context: ssl.SSLContext = None) -> None:
-        local_loop = loop if loop is not None else get_running_loop()
-        self.protocol = IMAP4ClientProtocol(local_loop, conn_lost_cb)
-        local_loop.create_task(local_loop.create_connection(lambda: self.protocol, host, port, ssl=ssl_context))
+    async def connect(self) -> None:
+        self.protocol = IMAP4ClientProtocol(self.asyncio_loop, self.conn_lost_cb)
+        await self.asyncio_loop.create_connection(lambda: self.protocol, self.host, self.port, ssl=self.ssl_context)
+        await asyncio.wait_for(self.protocol.wait('AUTH|NONAUTH'), self.timeout)
 
     def get_state(self) -> str:
         return self.protocol.state
 
-    async def wait_hello_from_server(self) -> None:
-        await asyncio.wait_for(self.protocol.wait('AUTH|NONAUTH'), self.timeout)
+    # async def wait_hello_from_server(self) -> None:
+    #     await asyncio.wait_for(self.protocol.wait('AUTH|NONAUTH'), self.timeout)
 
     async def login(self, user: str, password: str) -> Response:
         return await asyncio.wait_for(self.protocol.login(user, password), self.timeout)
@@ -869,14 +874,11 @@ def extract_exists(response: Response) -> Optional[int]:
 
 class IMAP4_SSL(IMAP4):
     def __init__(self, host: str = '127.0.0.1', port: int = IMAP4_SSL_PORT, loop: asyncio.AbstractEventLoop = None,
-                 timeout: float = IMAP4.TIMEOUT_SECONDS, ssl_context: ssl.SSLContext = None):
-        super().__init__(host, port, loop, timeout, None, ssl_context)
-
-    def create_client(self, host: str, port: int, loop: asyncio.AbstractEventLoop,
-                      conn_lost_cb: Callable[[Optional[Exception]], None] = None, ssl_context: ssl.SSLContext = None) -> None:
+                 timeout: float = IMAP4.TIMEOUT_SECONDS,  conn_lost_cb: Callable[[Optional[Exception]], None] = None, ssl_context: ssl.SSLContext = None):
         if ssl_context is None:
             ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
-        super().create_client(host, port, loop, conn_lost_cb, ssl_context)
+        super().__init__(host, port, loop, timeout, conn_lost_cb, ssl_context)
+
 
 
 # functions from imaplib
