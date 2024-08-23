@@ -706,6 +706,16 @@ class IMAP4(object):
     def __init__(self, host: str = '127.0.0.1', port: int = IMAP4_PORT, loop: asyncio.AbstractEventLoop = None,
                  timeout: float = TIMEOUT_SECONDS, conn_lost_cb: Callable[[Optional[Exception]], None] = None,
                  ssl_context: ssl.SSLContext = None):
+        """
+        Initializes the client object.
+        THis method does not start the connection setup. Use connect method.
+        :param host: host name of mail server -> str
+        :param port: port to connect on. By default 143 -> int
+        :param loop: asyncio eventloop
+        :param timeout: timeout limit when setting up connection, default 10s -> float
+        :param conn_lost_cb: Callback when connection lost -> callable
+        :param ssl_context: DO NOT USE, legacy code. When connecting over SSL, use IMAP4_SSL.
+        """
         self.timeout = timeout
         self.port = port
         self.host = host
@@ -720,6 +730,11 @@ class IMAP4(object):
         # self.create_client(host, port, loop, conn_lost_cb, ssl_context)
 
     async def connect(self) -> None:
+        """
+        This method connects to the server and waits on the server response.
+        It raises an exception in case of connection issues. 
+        :return:
+        """
         self.protocol = IMAP4ClientProtocol(self.asyncio_loop, self.conn_lost_cb)
         await self.asyncio_loop.create_connection(lambda: self.protocol, self.host, self.port, ssl=self.ssl_context)
         await asyncio.wait_for(self.protocol.wait('AUTH|NONAUTH'), self.timeout)
@@ -731,42 +746,227 @@ class IMAP4(object):
     #     await asyncio.wait_for(self.protocol.wait('AUTH|NONAUTH'), self.timeout)
 
     async def login(self, user: str, password: str) -> Response:
+        """
+        This method is used to login in the IMAP server. This method must be called after wait_hello_from_server.
+        """
         return await asyncio.wait_for(self.protocol.login(user, password), self.timeout)
 
     async def xoauth2(self, user: str, token: bytes) -> Response:
+        """
+        This method is used to login in the server using 2-factor authentication
+        :param user: username
+        :param token: acces token retrieved from your client application
+        :return: Server response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.xoauth2(user, token), self.timeout)
 
     async def logout(self) -> Response:
+        """
+        This method logs out of the session. This properly closes the TCP connection.
+        """
         return await asyncio.wait_for(self.protocol.logout(), self.timeout)
 
     async def select(self, mailbox: str = 'INBOX') -> Response:
+        """
+        This command instructs the server that the client wishes to select a particular mailbox or folder such as 'INBOX', 'TRASH', 'SENT', ....
+        All the following instructions that target a mailbox should assume the selected folder as the target of that command.
+        Once a mailbox is selected, the state of the connection becomes 'SELECTED'.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param mailbox: the desired mailbox or folder, for example 'INBOX', 'TRASH', 'SENT', .... -> str
+        :return: Server responds with a status and an overview of the mails in the folder -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.select(mailbox), self.timeout)
 
     async def search(self, *criteria: str, charset: Optional[str] = 'utf-8') -> Response:
+        """
+        This command instructs the server to return the ID's of the messages from a certain folder that match with the supplied search terms.
+        One limitation of the command is that when multiple search terms are specified, they are considered “AND” terms by default, but you can select only two terms to “OR”, and there is no complex logic grouping (i.e. bracketing of terms)
+        The possible search terms / criteria:
+            ALL: All messages in the mailbox.
+            ANSWERED: Messages with the \\Answered flag set.
+            BCC <string>: Messages that contain the specified string in the envelope structure’s BCC field.
+            BEFORE <date>: Messages whose internal date (disregarding time and timezone) is earlier than the specified date.
+            BODY <string>: Messages that contain the specified string in the body of the message.
+            CC <string>: Messages that contain the specified string in the envelope structure’s CC field.
+            DELETED: Messages with the \\Deleted flag set.
+            DRAFT: Messages with the \\Draft flag set.
+            FLAGGED: Messages with the \\Flagged flag set.
+            FROM <string>: Messages that contain the specified string in the envelope structure’s FROM field.
+            HEADER <field-name> <string>: Messages that have a header with the specified field-name and which contain the specified string in the text of the header (i.e. what comes after the colon). If the string to search is zero-length, this matches all messages that have a header line with the specified field-name, regardless of the contents.
+            KEYWORD <flag>: Messages with the specified keyword flag set.
+            LARGER <n>:  Messages with a size larger than the specified number of octets.
+            NEW: Messages that have the \\Recent flag set but not the \\Seen flag.
+            NOT <search-key>: Messages that do not match the specified search key.
+            OLD: Messages that do not have the \\Recent flag set.
+            ON <date>: Messages whose internal date (disregarding time and timezone) is within the specified date.
+            OR <search-key1> <search-key2>: Messages that match either search key.
+            RECENT: Messages that have the \\Recent flag set.
+            SEEN: Messages that have the \\Seen flag set.
+            SENTBEFORE <date>: Messages whose Date: header (disregarding time and timezone) is earlier than the specified date.
+            SENTON <date>: Messages whose Date: header (disregarding time and timezone) is within the specified date.
+            SENTSINCE <date>: Messages whose Date: header (disregarding time and timezone) is within or later than the specified date.
+            SINCE <date>: Messages whose internal date (disregarding time and timezone) is within or later than the specified date.
+            SMALLER <n>: Messages with a size smaller than the specified number of octets.
+            SUBJECT <string>: Messages that contain the specified string in the envelope structure’s SUBJECT field.
+            TEXT <string>: Messages that contain the specified string in the header or body of the message.
+            TO <string>: Messages that contain the specified string in the envelope structure’s TO field.
+            UID <sequence set>: Messages with unique identifiers corresponding to the specified unique identifier set. Sequence set ranges are permitted.
+            UNANSWERED: Messages that do not have the \\Answered flag set.
+            UNDELETED: Messages that do not have the \\Deleted flag set.
+            UNDRAFT: Messages that do not have the \\Draft flag set.
+            UNFLAGGED: Messages that do not have the \\Flagged flag set.
+            UNKEYWORD <flag>: Messages that do not have the specified keyword flag set.
+            UNSEEN: Messages that do not have the \\Seen flag set
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param criteria: a logic combination of the desired search terms -> str
+        :param charset: the desired character set, by default utf-8 -> str
+        :return: Server responds with a status and list of the matching mail ID's -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.search(*criteria, charset=charset), self.timeout)
 
     async def uid_search(self, *criteria: str, charset: Optional[str] = 'utf-8') -> Response:
+        """
+                This command instructs the server to return the UID's of the messages from a certain folder that match with the supplied search terms.
+                One limitation of the command is that when multiple search terms are specified, they are considered “AND” terms by default, but you can select only two terms to “OR”, and there is no complex logic grouping (i.e. bracketing of terms)
+                The possible search terms / criteria:
+                    ALL: All messages in the mailbox.
+                    ANSWERED: Messages with the Answered flag set.
+                    BCC <string>: Messages that contain the specified string in the envelope structure’s BCC field.
+                    BEFORE <date>: Messages whose internal date (disregarding time and timezone) is earlier than the specified date.
+                    BODY <string>: Messages that contain the specified string in the body of the message.
+                    CC <string>: Messages that contain the specified string in the envelope structure’s CC field.
+                    DELETED: Messages with the \\Deleted flag set.
+                    DRAFT: Messages with the \\Draft flag set.
+                    FLAGGED: Messages with the \\Flagged flag set.
+                    FROM <string>: Messages that contain the specified string in the envelope structure’s FROM field.
+                    HEADER <field-name> <string>: Messages that have a header with the specified field-name and which contain the specified string in the text of the header (i.e. what comes after the colon). If the string to search is zero-length, this matches all messages that have a header line with the specified field-name, regardless of the contents.
+                    KEYWORD <flag>: Messages with the specified keyword flag set.
+                    LARGER <n>:  Messages with a size larger than the specified number of octets.
+                    NEW: Messages that have the \\Recent flag set but not the \\Seen flag.
+                    NOT <search-key>: Messages that do not match the specified search key.
+                    OLD: Messages that do not have the \\Recent flag set.
+                    ON <date>: Messages whose internal date (disregarding time and timezone) is within the specified date.
+                    OR <search-key1> <search-key2>: Messages that match either search key.
+                    RECENT: Messages that have the \\Recent flag set.
+                    SEEN: Messages that have the \\Seen flag set.
+                    SENTBEFORE <date>: Messages whose Date: header (disregarding time and timezone) is earlier than the specified date.
+                    SENTON <date>: Messages whose Date: header (disregarding time and timezone) is within the specified date.
+                    SENTSINCE <date>: Messages whose Date: header (disregarding time and timezone) is within or later than the specified date.
+                    SINCE <date>: Messages whose internal date (disregarding time and timezone) is within or later than the specified date.
+                    SMALLER <n>: Messages with a size smaller than the specified number of octets.
+                    SUBJECT <string>: Messages that contain the specified string in the envelope structure’s SUBJECT field.
+                    TEXT <string>: Messages that contain the specified string in the header or body of the message.
+                    TO <string>: Messages that contain the specified string in the envelope structure’s TO field.
+                    UID <sequence set>: Messages with unique identifiers corresponding to the specified unique identifier set. Sequence set ranges are permitted.
+                    UNANSWERED: Messages that do not have the \\Answered flag set.
+                    UNDELETED: Messages that do not have the \\Deleted flag set.
+                    UNDRAFT: Messages that do not have the \\Draft flag set.
+                    UNFLAGGED: Messages that do not have the \\Flagged flag set.
+                    UNKEYWORD <flag>: Messages that do not have the specified keyword flag set.
+                    UNSEEN: Messages that do not have the \\Seen flag set
+                From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+                :param criteria: a logic combination of the desired search terms -> str
+                :param charset: the desired character set, by default utf-8 -> str
+                :return: Server responds with a status and list of the matching mail UID's -> Response: namedtuple('Response', 'result lines')
+                """
         return await asyncio.wait_for(self.protocol.search(*criteria, by_uid=True, charset=charset), self.timeout)
 
     async def uid(self, command: str, *criteria: str) -> Response:
+        """
+        This method allows the client to perform an IMAP command on a certain UID. The commands are 'FETCH', 'STORE', 'COPY', 'MOVE' and 'EXPUNGE'.
+        THis method instructs the server to use UID's as arguments or results instead of message sequence numbers.
+        It is possible to provide criteria alongside the IMAP command:
+            Fetch -> UID | desired message parts
+            STORE ->  UID | flags
+            COPY -> UID | destination folder
+            MOVE -> UID | destination folder
+            EXPUNGE -> UID
+        From https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param command: 'FETCH', 'STORE', 'COPY', 'MOVE' or 'EXPUNGE' -> str
+        :param criteria: target UID, other criteria related to command -> str
+        :return: Server responds with a status and the result of the command -> Response: namedtuple('Response', 'result lines')
+        """
         return await self.protocol.uid(command, *criteria, timeout=self.timeout)
 
     async def store(self, *criteria: str) -> Response:
+        """
+        The STORE command allows the client to store flags about messages. This works with pre-defined flags and with arbitrary flags.
+        In the background, this command uses a FETCH command on the flags of the message.
+        Predefined flags:
+            \\Seen -> Message has been read
+            \\Answered -> Message has been answered
+            \\Flagged -> Message is “flagged” for urgent/special attention
+            \\Deleted -> Message is “deleted” for removal later by EXPUNGE
+            \\Draft -> Message has not completed composition (marked as a draft)
+            \\Recent -> Message is “recently” arrived in this mailbox. This session is the first session to have been notified about this message. If the session is read-write, subsequent sessions will not see \\Recent set for this message. This flag cannot be altered by the client.
+        From: https://www.atmail.com/blog/advanced-imap/ (23/08/2024)
+        :param criteria: message sequence number, flags -> str
+        :return: Server responds with a status and the requested flags -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.store(*criteria), self.timeout)
 
     async def copy(self, *criteria: str) -> Response:
+        """
+        Triggers the COPY command on the IMAP server to copy specified messages to a different mailbox.
+
+        This method sends a COPY command to the server based on the provided criteria (such as message IDs or ranges),
+        instructing the server to copy the selected messages to another mailbox.
+        :param criteria: message ID, destination folder
+        :return: Server responds with a status and information about the outcome of the operation -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.copy(*criteria), self.timeout)
 
     async def expunge(self) -> Response:
+        """
+        Triggers the EXPUNGE command on the IMAP server to permanently remove messages marked for deletion.
+
+        This method uses the IMAP protocol's `expunge()` method to clear messages that have been flagged for deletion from the
+        mail server.
+
+        :return: Server responds with a status and information about the outcome of the command -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.expunge(), self.timeout)
 
     async def fetch(self, message_set: str, message_parts: str) -> Response:
+        """
+        Retrieves specific parts of targeted messages from the IMAP server.
+
+        This method sends a FETCH command to the IMAP server to retrieve specific parts of messages, such as the body, headers,
+        or flags, for the specified message set. The possible message parts are:
+            ALL: Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE ENVELOPE)
+            FAST: Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE)
+            FULL: Macro equivalent to: (FLAGS INTERNALDATE RFC822.SIZE ENVELOPE BODY)
+            BODY: Non-extensible form of BODYSTRUCTURE.
+            BODY[<section>]<<partial>>: The text of a particular body section. The section specification is a set of zero or more part specifiers delimited by periods. A part specifier is either a part number or one of the following: HEADER, HEADER.FIELDS, HEADER.FIELDS.NOT, MIME, and TEXT. An empty section specification refers to the entire message, including the header. You may even select only parts of a multipart MIME message and even specific octets within that part, see RFC 3501#section-6.4.5 for more details.
+            BODY.PEEK[<section>]<<partial>>: An alternate form of BODY[<section>] that does not implicitly set the \\Seen flag.
+            BODYSTRUCTURE: The MIME body structure of the message. This is computed by the server by parsing the MIME header fields in the header and body MIME headers.
+            ENVELOPE: The envelope structure of the message. This is computed by the server by parsing the message header into the component parts, defaulting various fields as necessary.
+            FLAGS: The flags that are set for this message.
+            INTERNALDATE: The internal date of the message.
+            RFC822: methodally equivalent to BODY[], differing in the syntax of the resulting untagged FETCH data in that the full RFC822 message is returned.
+            RFC822.HEADER: methodally equivalent to BODY.PEEK[HEADER], with RFC822 header syntax returned.
+            RFC822.SIZE: The size of the message.
+            RFC822.TEXT: methodally equivalent to BODY[TEXT], differing in the syntax of the resulting untagged FETCH data as RFC822.TEXT is returned.
+            UID: The unique identifier for the message.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param message_set: a set of the message sequence numbers of the targeted messages -> str
+        :param message_parts: a combination of the desired message parts -> str
+        :return: Server responds with a status and the requested message parts -> Response: namedtuple('Response', 'result lines')
+        """
         return await self.protocol.fetch(message_set, message_parts, timeout=self.timeout)
 
     async def idle(self) -> Response:
+        """
+        This method is used internally. It is better to use the idle_start method
+        :return: 
+        """
         return await self.protocol.idle()
 
     def idle_done(self) -> None:
+        """
+        This method stops the idling mode
+        :return: 
+        """
         if self._idle_waiter is not None:
             self._idle_waiter.cancel()
         self.protocol.idle_done()
@@ -778,9 +978,23 @@ class IMAP4(object):
         return False
 
     async def wait_server_push(self, timeout: float = TWENTY_NINE_MINUTES) -> Response:
+        """
+        This method waits until a push notification from the server is received when in IDLE mode.
+        :param timeout: how long the system waits on a new push notification -> float
+        :return: 
+        """
         return await asyncio.wait_for(self.protocol.idle_queue.get(), timeout=timeout)
 
     async def idle_start(self, timeout: float = TWENTY_NINE_MINUTES) -> Future:
+        """
+        This method starts the idling process.
+        The RFC2177 is implemented, to be able to wait for new mail messages without using CPU. The responses are pushed in an async queue, and it is possible to read them in real time. To leave the IDLE mode, it is necessary to send a "DONE" command to the server (idle_done method).
+        
+        This method automatically keeps the connection with the server alive by providing a 'heartbeat'. This is necessary because otherwise the connection could be closed due to inactivity. Periods of inactivity should be shorter then 29min. It is however advised to use timeouts of about 1min
+        
+        :param timeout: max allowed period of inactivity
+        :return: Future
+        """
         if self._idle_waiter is not None:
             self._idle_waiter.cancel()
         idle = asyncio.ensure_future(self.idle())
@@ -803,33 +1017,104 @@ class IMAP4(object):
         return idle
 
     def has_pending_idle(self) -> bool:
+        """
+        This method returns whether or not the system is in IDLE mode. This is checked locally and NOT on the server!
+        :return: bool
+        """
         return self.protocol.has_pending_idle_command()
 
     async def id(self, **kwargs) -> Response:
         return await asyncio.wait_for(self.protocol.id(**kwargs), self.timeout)
 
     async def namespace(self) -> Response:
+        """
+        This command returns the prefix and hierarchy delimiter to the Personal Namespace(s), other Users’ Namespace(s) and Shared Namespace(s) that the server wishes to expose. The command also reveals the folder separator.
+        The response is returned in the following order: personal namespaces, user namespaces and shared namespaces. If there are not user namespaces or shared namespaces, a NIL is displayed.
+        :return: Server responds with a status and the different namespaces -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.namespace(), self.timeout)
 
     async def noop(self) -> Response:
+        """
+        Sends a NOOP command to the IMAP server to keep the connection alive.
+
+        This method sends a NOOP command, which is essentially a no-operation command, to the IMAP server. It does not alter
+        the state of the server but is used to check for new server responses or to maintain the connection. The operation
+        waits for a response within a specified timeout.
+        :return: Server responds with a status and an overview of the mails in the selected folder -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('NOOP'), self.timeout)
 
     async def check(self) -> Response:
+        """
+        This is a seldom used command. It requests a “checkpoint” on the server. Which means that the server is instructed to complete some housekeeping on the mailbox – very weird for a client to request this,  but it exists…
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :return: Server responds with a status and if the task was completed -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('CHECK'), self.timeout)
 
     async def examine(self, mailbox: str = 'INBOX') -> Response:
+        """
+        This command does the exact same thing as SELECT, except that it selects the folder in read-only mode, meaning that no changes can be effected on the folder.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param mailbox: The requested mailbox -> str
+        :return: Server responds with a status and an overview of the selected folder -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('EXAMINE', mailbox), self.timeout)
 
     async def status(self, mailbox: str, names: str) -> Response:
+        """
+        This command requests the status of the folder provided. This allows the status of a folder not currently selected to be updated in the client. The client must advise the server what attributes of the folder that it is interested in, with possible values being:
+            MESSAGES: The number of messages in the mailbox.
+            RECENT: The number of messages with the \\Recent flag set.
+            UIDNEXT: The next unique identifier value of the mailbox.
+            UIDVALIDITY: The unique identifier validity value of the mailbox.
+            UNSEEN: The number of messages which do not have the \\Seen flag set.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param mailbox: the requested mailbox -> str
+        :param names: the folder attributes of interest -> str
+        :return: Server responds with a status and the status of the selected attributes in the selected folder -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('STATUS', mailbox, names), self.timeout)
 
     async def subscribe(self, mailbox: str) -> Response:
+        """
+        This method allows the client to subscribe to a certain mailbox.
+
+        In IMAP, you have a list of mailboxes, and these mailboxes may be: yours, the logged in user; or they might be other users who have given you access; or they might be publicly accessible folders, for anyone to access.
+        However, you may find that a subset of these folders are more interesting to you than others and therefore you wish to “subscribe” to them and only be notified of updates and changes to those folders.
+        When you SUBSCRIBE to a folder, that folder will be returned when the client issues an LSUB command (i.e. list subscribed folders only) – this means the client then only needs to poll for changes in the folders that you are interested in, rather than all of the folders you might be able to access.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param mailbox: the mailbox of interest
+        :return: Server responds with a status and information about the outcome of the command -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('SUBSCRIBE', mailbox), self.timeout)
 
     async def unsubscribe(self, mailbox: str) -> Response:
+        """
+        This method allows the client to unsubscribe to a certain mailbox.
+        :param mailbox: the mailbox you wish to unsubscribe to -> str
+        :return: Server responds with a status and information about the outcome of the command -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('UNSUBSCRIBE', mailbox), self.timeout)
 
     async def lsub(self, reference_name: str, mailbox_name: str) -> Response:
+        """
+        his command will list all folders/mailboxes that you are subscribed to on the server, whether it be your own folders, another user’s, or publicly available folders.
+        This command does take two possible arguments. The first (known as the “reference name”) indicates under what folder hierarchy you’d like to limit the list to. The second argument (known as the “mailbox name”) can contain wildcards to match names under the provided hierarchy.
+        For example:
+            A002 LSUB "#news." "comp.mail.*"
+            * LSUB () "." #news.comp.mail.mime
+            * LSUB () "." #news.comp.mail.misc
+            A002 OK LSUB completed
+            A003 LSUB "#news." "comp.%"
+            * LSUB (\\NoSelect) "." #news.comp.mail
+            A003 OK LSUB completed
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param reference_name: indicates under what folder hierarchy you’d like to limit the list to
+        :param mailbox_name: can contain wildcards to match names under the provided hierarchy.
+        :return: Server responds with a status and a list of the subscribed folders -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.simple_command('LSUB', reference_name, mailbox_name), self.timeout)
 
     async def create(self, mailbox_name: str) -> Response:
@@ -845,12 +1130,25 @@ class IMAP4(object):
         return await asyncio.wait_for(self.protocol.execute(Command('GETQUOTAROOT', self.protocol.new_tag(), 'INBOX', untagged_resp_name='QUOTA')), self.timeout)
 
     async def list(self, reference_name: str, mailbox_pattern: Pattern) -> Response:
-        return await asyncio.wait_for(self.protocol.simple_command('LIST', reference_name, mailbox_pattern), self.timeout)
+        """
+        This command will list all folders/mailboxes that you are entitled to list on the server, whether it be your own folders, another user’s, or publicly available folders.
+        This command does take two possible arguments. The first (known as the “reference name”) indicates under what folder hierarchy you’d like to limit the list to. The second argument (known as the “mailbox name”) can contain wildcards to match names under the provided hierarchy.
+        From: https://www.atmail.com/blog/imap-commands/ (23/08/2024)
+        :param reference_name:
+        :param mailbox_pattern:
+        :return:
+        """
+        return await asyncio.wait_for(self.protocol.simple_command('LIST', reference_name, mailbox_pattern),
+                                      self.timeout)
 
     async def append(self, message_bytes, mailbox: str = 'INBOX', flags: str = None, date: Any = None) -> Response:
         return await self.protocol.append(message_bytes, mailbox, flags, date, timeout=self.timeout)
 
     async def close(self) -> Response:
+        """
+        The IMAP4.close() method is an IMAP method that is closing the selected mailbox, thus passing from SELECTED state to AUTH state. It does not close the TCP connection. The way to close TCP connection properly is to logout.
+        :return: Server responds with a status and information about the outcome of the command -> Response: namedtuple('Response', 'result lines')
+        """
         return await asyncio.wait_for(self.protocol.close(), self.timeout)
 
     async def move(self, uid_set: str, mailbox: str) -> Response:
@@ -875,13 +1173,23 @@ def extract_exists(response: Response) -> Optional[int]:
 class IMAP4_SSL(IMAP4):
     def __init__(self, host: str = '127.0.0.1', port: int = IMAP4_SSL_PORT, loop: asyncio.AbstractEventLoop = None,
                  timeout: float = IMAP4.TIMEOUT_SECONDS,  conn_lost_cb: Callable[[Optional[Exception]], None] = None, ssl_context: ssl.SSLContext = None):
+        """
+                Initializes the client object.
+                THis method does not start the connection setup. Use connect method.
+                :param host: host name of mail server -> str
+                :param port: port to connect on. By default 143 -> int
+                :param loop: asyncio eventloop
+                :param timeout: timeout limit when setting up connection, default 10s -> float
+                :param conn_lost_cb: Callback when connection lost -> callable
+                :param ssl_context: ssl.SSLContext
+                """
         if ssl_context is None:
             ssl_context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
         super().__init__(host, port, loop, timeout, conn_lost_cb, ssl_context)
 
 
 
-# functions from imaplib
+# methods from imaplib
 def int2ap(num) -> str:
     """Convert integer to A-P string representation."""
     val = ''
